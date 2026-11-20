@@ -1,0 +1,5 @@
+{
+  "endpoint": "https://YOUR-SITE.example/backend.php",
+  "worker_key": "generated-by-install",
+  "prompt_suffix": ""
+}

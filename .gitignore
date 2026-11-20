@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+venv/
+gflow_home/
+worker_config.json
+worker.log
+*.log
+studio_logs/
+worker_out/
+worker_meta/
+local_out/
+test_pro_out/
+site/local_data/
+АДРЕС_СТУДИИ.txt
