@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -64,6 +65,65 @@ def registered_tunnel_url(line: str) -> str:
     return ""
 
 
+def dashboard_url(endpoint: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}/"
+    return ""
+
+
+def remote_worker_endpoint(endpoint: str) -> bool:
+    parsed = urllib.parse.urlparse(endpoint)
+    return parsed.scheme == "https" and bool(parsed.netloc) and parsed.path.endswith("/backend.php")
+
+
+def run_remote_worker(endpoint: str) -> int:
+    origin = dashboard_url(endpoint)
+    LOGS.mkdir(exist_ok=True)
+    lock = (LOGS / "launcher.lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        say("Исполнитель уже запущен. Остановите прежний запуск, если хотите сменить режим.")
+        return 0
+    ADDRESS_FILE.write_text(
+        "Адрес студии на сервере:\n" + origin +
+        "\n\nЛогин: studio\nПароль: пароль дашборда на сервере.\n"
+        "Этот Mac только генерирует. Дашборд работает без туннеля.\n",
+        encoding="utf-8")
+    worker_log = (LOGS / "worker.log").open("a", encoding="utf-8")
+    worker: subprocess.Popen | None = None
+
+    def launch_worker() -> subprocess.Popen:
+        say("Запускаю исполнитель Google Flow…")
+        env = dict(os.environ)
+        env.update(GFLOW_CLI_HOME=str(BASE / "gflow_home"), GFLOW_CLI_FLOW_HOST="flow.google.com",
+                   PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+        return subprocess.Popen([sys.executable, "worker.py"], cwd=BASE, env=env,
+                                stdin=subprocess.DEVNULL, stdout=worker_log,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+
+    def on_signal(_signum, _frame):
+        STOP.set()
+
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+    try:
+        worker = launch_worker()
+        say("Дашборд на сервере: " + origin)
+        say("Этот Mac только исполняет очередь. Ctrl+C — остановить генератор.\n")
+        subprocess.run(["open", origin], check=False)
+        while not STOP.wait(1):
+            if worker.poll() is not None:
+                say("Исполнитель остановился; перезапускаю…")
+                worker = launch_worker()
+    finally:
+        say("Останавливаю исполнитель…")
+        stop_process(worker)
+        worker_log.close()
+    return 0
+
+
 def stop_process(process: subprocess.Popen | None) -> None:
     if process is None or process.poll() is not None:
         return
@@ -93,12 +153,16 @@ def main() -> int:
     if not (BASE / "worker_config.json").is_file():
         say("Сначала выполните ./install.sh и ./login.sh.")
         return 1
+    config = json.loads((BASE / "worker_config.json").read_text(encoding="utf-8"))
+    endpoint = str(config.get("endpoint") or "").strip()
+    if not args.local and remote_worker_endpoint(endpoint):
+        return run_remote_worker(endpoint)
     if not args.local and not (BASE / "site/local_data/access.json").is_file():
         say("Для запуска по внешней ссылке задайте пароль студии.")
         return 1
-    config = json.loads((BASE / "worker_config.json").read_text(encoding="utf-8"))
-    if config.get("endpoint") != LOCAL_URL + "/backend.php":
-        say("В worker_config.json должен быть локальный endpoint: " + LOCAL_URL + "/backend.php")
+    if endpoint != LOCAL_URL + "/backend.php":
+        say("Для локальной студии в worker_config.json нужен endpoint: " + LOCAL_URL + "/backend.php")
+        say("Для дашборда на сервере укажите https://ВАШ-ДОМЕН/backend.php")
         return 1
 
     LOGS.mkdir(exist_ok=True)
